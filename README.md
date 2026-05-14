@@ -1,3 +1,149 @@
+# Fluxo de Trabalho de Montagem do Mitogenoma
+
+Pipeline para identificar scaffolds candidatos do genoma mitocondrial a partir de uma montagem de genoma híbrido, recrutando reads mitocondriais e realizando uma remontagem híbrida direcionada usando reads curtos da Illumina e reads longos da PacBio.
+
+### Fluxo de trabalho geral
+
+O fluxo de trabalho começa com uma montagem de genoma gerada com o SPAdes, representada aqui por `scaffolds_1000bp.fasta`, e um conjunto de sequências de CDS mitocondriais em formato FASTA de nucleotídeos e proteínas.
+
+O primeiro script, `find_mitogenome_tblastn.py`, usa proteínas mitocondriais como consultas em uma busca `tBLASTn` contra a montagem do genoma. Esta etapa identifica scaffolds que contêm genes mitocondriais putativos. As ferramentas de linha de comando do NCBI BLAST+ suportam formatos de saída tabulares personalizados, que são usados ​​aqui para gerar tabelas detalhadas de hits, coordenadas, identidade, cobertura, valor E e bitscore.
+
+O segundo script, `mito_recruit_reassemble_pipeline.py`, utiliza os scaffolds candidatos da primeira etapa para recrutar reads dos dados de sequenciamento originais. Reads curtos são mapeados com `bowtie2` ou `bwa`, enquanto reads PacBio são mapeados com `minimap2`. Para reads PacBio CLR, o minimap2 fornece a predefinição `map-pb` para mapear reads longos contínuos PacBio mais antigos a um genoma de referência. Os reads recrutados são então remontados com o SPAdes, utilizando reads curtos pareados e reads longos PacBio como dados suplementares. O SPAdes suporta montagem híbrida através da opção `--pacbio` para reads PacBio CLR.
+
+### Diagrama de fluxo de trabalho
+
+```sereia
+fluxograma TD 
+
+    A[Arquivos de entrada] -> B[Montagem do genoma híbrido] 
+    A -> C [arquivos CDS FASTA mitocondriais] 
+
+    B --> B1[scaffolds_1000bp.fasta] 
+    C --> C1[Agabis_H97_prot.fasta] 
+    C --> C2[Agabis_H97_nt.fasta] 
+
+    B1 --> D[Etapa 1: pesquisa tBLASTn] 
+    C1 --> D 
+    C2 --> D 
+
+    D -> E[find_mitogenoma_tblastn.py] 
+
+    E -> F1[tblastn_raw.tsv] 
+    E -> F2[tblastn_hits_all.csv] 
+    E -> F3[tblastn_hits_filtered.csv] 
+    E--> F4[best_hit_per_query.csv]
+
+    E --> F5[scaffold_summary.csv]
+
+    E --> F6[candidate_mitogene_scaffolds.fasta]
+
+    F5 --> G[Etapa 2: Selecionar scaffolds candidatos]
+
+    B1 --> G
+
+    G --> H[mito_recruit_reassemble_pipeline.py]
+
+    I1[FASTQ original Illumina R1] --> H
+
+    I2[FASTQ original Illumina R2] --> H
+
+    I3[Leituras PacBio originais] --> H
+
+    H --> J1[Mapear leituras curtas contra scaffolds candidatos]
+
+    H --> J2[Mapear leituras PacBio contra scaffolds candidatos]
+
+    J1 --> K1[short_reads_vs_candidates.sorted.bam]
+
+    J2 --> K2[pacbio_reads_vs_candidates.sorted.bam]
+
+    K1 --> L1[Extrair IDs de leituras curtas mapeadas]
+
+    K2 --> L2[Extrair IDs de leituras PacBio mapeadas]
+
+    L1 --> M1[recruited_R1.fastq.gz]
+
+    L1 --> M2[recruited_R2.fastq.gz]
+
+    L2 --> M3[recruited_pacbio_reads.fastq.gz ou .fasta.gz]
+
+    M1 --> N[Etapa 3: Remontagem híbrida direcionada]
+
+    M2 --> N
+    M3 --> N
+
+    N --> O[Remontagem SPAdes com leituras recrutadas]
+
+    O --> P1[spades_reassembly/scaffolds.fasta]
+
+    O --> P2[spades_reassembly/contigs.fasta]
+
+    P1 --> Q[Etapa 4: Validar candidatos remontados]
+    C1 --> Q
+    Q --> R[Executar find_mitogenom_tblastn.py novamente na nova montagem]
+
+    R --> S[Scaffolds finais do mitogenoma candidato]
+```
+
+---
+
+Ordem de execução
+
+Este fluxo de trabalho deve ser executado na seguinte ordem:
+
+1. Prepare os arquivos de entrada.
+
+2. Execute find_mitogenom_tblastn.py.
+
+3. Inspecione scaffold_summary.csv.
+
+4. Execute mito_recruit_reassemble_pipeline.py.
+
+5. Inspecione a remontagem das leituras recrutadas.
+
+6. Execute find_mitogenom_tblastn.py novamente na nova montagem.
+
+7. Avalie os scaffolds candidatos finais do mitogenoma.
+
+---
+
+| File                                               | Description                                                                                                                                                 |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scaffolds_1000bp.fasta`                           | Montagem do genoma gerada com SPAdes. Este arquivo é usado como referência para o primeiro `tBLASTn`. search.                                                   |
+| `Agabis_H97_prot.fasta`                            | Sequências de proteínas de CDS mitocondrial. Estas são usadas como consultas no `tBLASTn`.                                                                           |
+| `Agabis_H97_nt.fasta`                              | Sequências de nucleotídeos de CDS mitocondrial. Estas não são usadas diretamente pelo `tBLASTn`, mas são extraídas posteriormente para comparação com as sequências de proteínas correspondentes. |
+| `reads_R1.fastq.gz`                                | Leituras Illumina originais utilizadas na montagem híbrida.                                                                                                |
+| `reads_R2.fastq.gz`                                | Sequências de leitura reversa originais da Illumina utilizadas na montagem híbrida.                                                                                                |
+| `pacbio_reads.fastq.gz` or `pacbio_reads.fasta.gz` | Sequências originais de leitura PacBio utilizadas na montagem híbrida.                                                                                                          |
+
+---
+
+### Etapa 1: Identificar possíveis estruturas mitocondriais com o tBLASTn O primeiro passo é pesquisar as proteínas mitocondriais no conjunto do genoma.
+
+```bash
+python find_mitogenome_tblastn.py \
+  --assembly scaffolds_1000bp.fasta \
+  --cds-prot Agabis_H97_prot.fasta \
+  --cds-nt Agabis_H97_nt.fasta \
+  --threads 12 \
+  --outdir tblastn_mitogenome_results
+``
+
+Esta etapa cria:
+
+| Arquivo de saída | Descrição |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `tblastn_mitogenome_results/tables/tblastn_raw.tsv` | Saída bruta do `tBLASTn`. |
+| `tblastn_mitogenome_results/tables/tblastn_hits_all.csv` | Todos os resultados do BLAST em formato CSV. |
+| `tblastn_mitogenome_results/tables/tblastn_hits_filtered.csv` | Resultados do BLAST filtrados após a aplicação de limiares de identidade, cobertura e pontuação de bits. |
+| `tblastn_mitogenome_results/tables/best_hit_per_query.csv` | Melhor resultado para cada consulta de proteína mitocondrial. |
+| `tblastn_mitogenom_results/tables/scaffold_summary.csv` | Resumo das evidências mitocondriais por scaffold. Este é o principal resultado desta etapa. |
+| `tblastn_mitogenom_results/fasta/candidate_mitogenom_scaffolds.fasta` | Arquivo FASTA contendo os scaffolds candidatos identificados pelo `tBLASTn`. |
+| `tblastn_mitogenom_results/fasta/tblastn_hit_regions_plus_padding.fasta` | Arquivo FASTA contendo as regiões ao redor de cada resultado do BLAST. |
+| `tblastn_mitogenom_results/fasta/matched_cds_proteins.fasta` | Sequências de CDS de proteínas que corresponderam à montagem. |
+| `tblastn_mitogenom_results/fasta/matched_cds_nucleotides.fasta` | Sequências de CDS de nucleotídeos correspondentes às proteínas correspondentes.
+
+---
 
 
 | Etapa                                           | Ferramenta                                                    |
@@ -24,7 +170,7 @@ O `CAP3` é opcional. O pipeline roda sem ele.
 
 ---
 
-# Como rodar com PacBio
+### Como rodar com PacBio
 
 Você precisa dos arquivos originais usados na montagem híbrida:
 
@@ -71,7 +217,7 @@ O script detecta automaticamente se o arquivo PacBio é `FASTQ` ou `FASTA`.
 
 ---
 
-# O que o pipeline faz biologicamente
+### O que o pipeline faz biologicamente
 
 A lógica é:
 
@@ -97,7 +243,7 @@ Isso corresponde ao que foi dito no grupo: selecionar os contigs/scaffolds com h
 
 ---
 
-# Arquivos gerados
+### Arquivos gerados
 
 | Arquivo/pasta                                            | O que informa                                                                                        |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -123,7 +269,7 @@ Isso corresponde ao que foi dito no grupo: selecionar os contigs/scaffolds com h
 
 ---
 
-# Como selecionar só 4 scaffolds
+### Como selecionar só 4 scaffolds
 
 O padrão já é:
 
@@ -154,7 +300,7 @@ Para usar os 10 melhores:
 
 ---
 
-# Como selecionar scaffolds manualmente
+### Como selecionar scaffolds manualmente
 
 Primeiro abra:
 
@@ -181,7 +327,7 @@ python mito_recruit_reassemble_pipeline.py \
 
 ---
 
-# Rodar só recrutamento, sem remontar
+### Rodar só recrutamento, sem remontar
 
 Para testar primeiro se o mapeamento e a extração funcionam:
 
@@ -214,7 +360,7 @@ cat mito_recruitment_pipeline_pacbio_test/recruited_reads/recruited_pacbio_reads
 
 ---
 
-# Rodar CAP3 opcionalmente
+### Rodar CAP3 opcionalmente
 
 Usar `CAP3` para juntar contigs que têm genes mitocondriais.
 
@@ -245,7 +391,7 @@ remontar com SPAdes usando --pacbio
 
 ---
 
-# Depois da remontagem
+### Depois da remontagem
 
 O resultado principal será:
 
