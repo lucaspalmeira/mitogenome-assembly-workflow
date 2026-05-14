@@ -10,11 +10,6 @@
 | Remontar somente reads recrutadas               | `spades.py --pacbio`                                          |
 | Tentar juntar contigs candidatos, opcional      | `CAP3`                                                        |
 
-
-```bash
-chmod +x mito_recruit_reassemble_pipeline.py
-```
-
 ---
 
 # Instalar/carregar dependências
