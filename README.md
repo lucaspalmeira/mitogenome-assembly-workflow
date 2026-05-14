@@ -132,7 +132,20 @@ Este fluxo de trabalho deve ser executado na seguinte ordem:
 O pipeline utiliza ferramentas externas de bioinformática. Elas devem estar instaladas no ambiente antes da execução.
 
 ```bash
-conda install -c bioconda blast bowtie2 bwa samtools minimap2 spades
+conda create -n mitogenome-workflow \
+  -c conda-forge \
+  -c bioconda \
+  python=3.11 \
+  blast \
+  bowtie2 \
+  bwa \
+  samtools \
+  minimap2 \
+  spades
+```
+
+```bash
+conda activate mitogenome-workflow
 ```
 
 Dependências principais:
