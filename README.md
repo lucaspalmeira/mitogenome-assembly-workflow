@@ -11,9 +11,6 @@
 | Tentar juntar contigs candidatos, opcional      | `CAP3`                                                        |
 
 
-Baixe e execute o script <a href=''>mito_recruit_reassemble_pipeline.py</>
-
-
 ```bash
 chmod +x mito_recruit_reassemble_pipeline.py
 ```
