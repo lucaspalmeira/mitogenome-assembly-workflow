@@ -1,0 +1,14 @@
+name: mito_assembly
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10
+  - spades
+  - flye
+  - minimap2
+  - samtools
+  - blast
+  - bwa
+  - biopython
+  - seqkit
