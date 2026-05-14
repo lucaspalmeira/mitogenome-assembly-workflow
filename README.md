@@ -114,6 +114,87 @@ Este fluxo de trabalho deve ser executado na seguinte ordem:
 
 ---
 
+## Execução unificada com a camada orientada a objetos
+
+Além dos scripts individuais, o projeto agora inclui uma CLI unificada:
+
+```text
+run_workflow.py
+```
+
+Ela organiza o workflow completo em etapas modulares:
+
+```text
+tBLASTn inicial
+  ↓
+seleção de scaffolds candidatos
+  ↓
+recrutamento de reads
+  ↓
+remontagem direcionada
+  ↓
+validação automática da remontagem com novo tBLASTn
+  ↓
+curadoria opcional com toolkit/curate.py
+```
+
+Exemplo:
+
+```bash
+python run_workflow.py \
+  --assembly scaffolds_1000bp.fasta \
+  --cds-prot Agabis_H97_prot.fasta \
+  --cds-nt Agabis_H97_nt.fasta \
+  --short-r1 reads_R1.fastq.gz \
+  --short-r2 reads_R2.fastq.gz \
+  --pacbio-reads pacbio_reads.fastq.gz \
+  --pacbio-type raw \
+  --threads 20 \
+  --memory 80 \
+  --top-n 4 \
+  --min-mapq 20 \
+  --outdir analysis_run
+```
+
+Para também rodar a curadoria final:
+
+```bash
+python run_workflow.py \
+  --assembly scaffolds_1000bp.fasta \
+  --cds-prot Agabis_H97_prot.fasta \
+  --cds-nt Agabis_H97_nt.fasta \
+  --short-r1 reads_R1.fastq.gz \
+  --short-r2 reads_R2.fastq.gz \
+  --pacbio-reads pacbio_reads.fastq.gz \
+  --threads 20 \
+  --memory 80 \
+  --top-n 4 \
+  --min-mapq 20 \
+  --curate-final \
+  --expected-from-ref \
+  --rotate-to COX1 \
+  --outdir curated_run
+```
+
+Saídas principais:
+
+| Arquivo ou diretório | Descrição |
+|---|---|
+| `WORKFLOW_REPORT.md` | Relatório unificado do workflow completo. |
+| `commands.log` | Registro dos comandos executados. |
+| `01_discovery/` | Descoberta inicial dos scaffolds candidatos. |
+| `02_recruitment/` | Recrutamento de reads e remontagem direcionada. |
+| `03_validation/` | Validação automática da remontagem. |
+| `04_curate/` | Curadoria opcional, gerada com `--curate-final`. |
+
+A análise arquitetural detalhada está em:
+
+```text
+docs/PROJECT_ANALYSIS.md
+```
+
+---
+
 ## Arquivos de entrada
 
 | Arquivo | Descrição |

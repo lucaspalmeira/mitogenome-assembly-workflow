@@ -2,18 +2,22 @@
 
 import argparse
 import csv
-import gzip
 import shutil
 import subprocess
 from pathlib import Path
 from itertools import zip_longest
 
-
-def smart_open(path, mode="rt"):
-    path = str(path)
-    if path.endswith(".gz"):
-        return gzip.open(path, mode)
-    return open(path, mode)
+from workflow.bioio import (
+    detect_sequence_format,
+    fasta_iter,
+    fastq_iter,
+    load_read_ids,
+    read_fasta_records as read_fasta,
+    smart_open,
+    write_fasta,
+    write_fasta_record,
+    write_fastq_record,
+)
 
 
 def check_executable(program, required=True):
@@ -54,143 +58,6 @@ def run_cmd(cmd, log_file=None, dry_run=False):
             check=True,
             executable="/bin/bash",
         )
-
-
-def read_fasta(fasta_path):
-    records = {}
-    header = None
-    seq_chunks = []
-
-    with open(fasta_path, "r") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-
-            if line.startswith(">"):
-                if header is not None:
-                    seq_id = header.split()[0]
-                    records[seq_id] = {
-                        "header": header,
-                        "seq": "".join(seq_chunks).upper(),
-                    }
-
-                header = line[1:]
-                seq_chunks = []
-            else:
-                seq_chunks.append(line)
-
-        if header is not None:
-            seq_id = header.split()[0]
-            records[seq_id] = {
-                "header": header,
-                "seq": "".join(seq_chunks).upper(),
-            }
-
-    return records
-
-
-def write_fasta(records, output_path, width=80):
-    with open(output_path, "w") as out:
-        for header, seq in records:
-            out.write(f">{header}\n")
-            for i in range(0, len(seq), width):
-                out.write(seq[i:i + width] + "\n")
-
-
-def detect_sequence_format(path):
-    with smart_open(path, "rt") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("@"):
-                return "fastq"
-            if line.startswith(">"):
-                return "fasta"
-
-    raise ValueError(f"Não foi possível detectar o formato de {path}")
-
-
-def normalize_read_id(header):
-    read_id = header.strip()
-
-    if read_id.startswith("@") or read_id.startswith(">"):
-        read_id = read_id[1:]
-
-    read_id = read_id.split()[0]
-
-    if read_id.endswith("/1") or read_id.endswith("/2"):
-        read_id = read_id[:-2]
-
-    return read_id
-
-
-def fastq_iter(fastq_path):
-    with smart_open(fastq_path, "rt") as handle:
-        while True:
-            h = handle.readline()
-            if not h:
-                break
-
-            s = handle.readline()
-            p = handle.readline()
-            q = handle.readline()
-
-            if not q:
-                raise ValueError(f"FASTQ incompleto ou corrompido: {fastq_path}")
-
-            yield h, s, p, q, normalize_read_id(h)
-
-
-def fasta_iter(fasta_path):
-    with smart_open(fasta_path, "rt") as handle:
-        header = None
-        seq_chunks = []
-
-        for line in handle:
-            line = line.rstrip("\n")
-
-            if not line:
-                continue
-
-            if line.startswith(">"):
-                if header is not None:
-                    seq = "".join(seq_chunks)
-                    yield header, seq, normalize_read_id(header)
-
-                header = line
-                seq_chunks = []
-            else:
-                seq_chunks.append(line.strip())
-
-        if header is not None:
-            seq = "".join(seq_chunks)
-            yield header, seq, normalize_read_id(header)
-
-
-def write_fastq_record(handle, record):
-    h, s, p, q, _ = record
-    handle.write(h)
-    handle.write(s)
-    handle.write(p)
-    handle.write(q)
-
-
-def write_fasta_record(handle, header, seq, width=80):
-    handle.write(header + "\n")
-    for i in range(0, len(seq), width):
-        handle.write(seq[i:i + width] + "\n")
-
-
-def load_read_ids(ids_path):
-    ids = set()
-    with open(ids_path, "r") as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                ids.add(normalize_read_id(line))
-    return ids
 
 
 def to_int(value, default=0):
@@ -503,7 +370,8 @@ def map_short_reads_bwa(ref_fasta, r1, r2, outdir, threads, dry_run=False):
     return bam, flagstat
 
 
-def map_pacbio_reads_minimap2(ref_fasta, pacbio_reads, outdir, threads, dry_run=False):
+def map_pacbio_reads_minimap2(ref_fasta, pacbio_reads, outdir, threads,
+                              pacbio_type="raw", dry_run=False):
     check_executable("minimap2")
     check_executable("samtools")
 
@@ -513,9 +381,10 @@ def map_pacbio_reads_minimap2(ref_fasta, pacbio_reads, outdir, threads, dry_run=
     bam = outdir / "pacbio_reads_vs_candidates.sorted.bam"
     flagstat = outdir / "pacbio_reads_vs_candidates.flagstat.txt"
     log = outdir / "minimap2_pacbio_mapping.log"
+    preset = "map-hifi" if pacbio_type == "hifi" else "map-pb"
 
     cmd = (
-        f"minimap2 -t {threads} -ax map-pb {ref_fasta} {pacbio_reads} "
+        f"minimap2 -t {threads} -ax {preset} {ref_fasta} {pacbio_reads} "
         f"2> {log} "
         f"| samtools sort -@ {threads} -o {bam} -"
     )
@@ -527,11 +396,11 @@ def map_pacbio_reads_minimap2(ref_fasta, pacbio_reads, outdir, threads, dry_run=
     return bam, flagstat
 
 
-def extract_mapped_read_ids_from_bam(bam, output_ids, dry_run=False):
+def extract_mapped_read_ids_from_bam(bam, output_ids, min_mapq=0, dry_run=False):
     check_executable("samtools")
 
     cmd = (
-        f"samtools view -F 4 {bam} "
+        f"samtools view -F 4 -q {min_mapq} {bam} "
         f"| cut -f 1 "
         f"| LC_ALL=C sort -u "
         f"> {output_ids}"
@@ -736,6 +605,16 @@ def main():
     )
 
     parser.add_argument(
+        "--pacbio-type",
+        choices=["raw", "hifi", "corrected"],
+        default="raw",
+        help=(
+            "Tipo das reads PacBio para escolher o preset do minimap2. "
+            "raw/corrected usam map-pb; hifi usa map-hifi."
+        ),
+    )
+
+    parser.add_argument(
         "--outdir",
         default="mitogenome_recruitment_pipeline",
         help="Diretório de saída.",
@@ -769,6 +648,16 @@ def main():
         choices=["bowtie2", "bwa"],
         default="bowtie2",
         help="Alinhador para short reads.",
+    )
+
+    parser.add_argument(
+        "--min-mapq",
+        type=int,
+        default=0,
+        help=(
+            "MAPQ mínimo para considerar uma read como recrutada. "
+            "Use 20 para uma seleção mais conservadora."
+        ),
     )
 
     parser.add_argument(
@@ -886,6 +775,7 @@ def main():
     extract_mapped_read_ids_from_bam(
         bam=short_bam,
         output_ids=short_ids,
+        min_mapq=args.min_mapq,
         dry_run=args.dry_run,
     )
 
@@ -922,6 +812,7 @@ def main():
             pacbio_reads=pacbio_reads,
             outdir=mapping_pacbio_dir,
             threads=args.threads,
+            pacbio_type=args.pacbio_type,
             dry_run=args.dry_run,
         )
 
@@ -930,6 +821,7 @@ def main():
         extract_mapped_read_ids_from_bam(
             bam=pacbio_bam,
             output_ids=pacbio_ids,
+            min_mapq=args.min_mapq,
             dry_run=args.dry_run,
         )
 

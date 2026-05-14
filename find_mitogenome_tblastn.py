@@ -7,6 +7,12 @@ import subprocess
 from pathlib import Path
 from collections import defaultdict
 
+from workflow.bioio import (
+    read_fasta_records as read_fasta,
+    reverse_complement,
+    write_fasta,
+)
+
 
 BLAST_COLUMNS = [
     "qseqid",
@@ -42,56 +48,6 @@ def check_executable(program):
 def run_command(cmd):
     print("\n[CMD]", " ".join(map(str, cmd)))
     subprocess.run(cmd, check=True)
-
-
-def read_fasta(fasta_path):
-    records = {}
-    header = None
-    seq_chunks = []
-
-    with open(fasta_path, "r") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-
-            if line.startswith(">"):
-                if header is not None:
-                    seq_id = header.split()[0]
-                    records[seq_id] = {
-                        "header": header,
-                        "seq": "".join(seq_chunks).upper(),
-                    }
-
-                header = line[1:]
-                seq_chunks = []
-            else:
-                seq_chunks.append(line)
-
-        if header is not None:
-            seq_id = header.split()[0]
-            records[seq_id] = {
-                "header": header,
-                "seq": "".join(seq_chunks).upper(),
-            }
-
-    return records
-
-
-def write_fasta(records, output_path, width=80):
-    with open(output_path, "w") as out:
-        for header, seq in records:
-            out.write(f">{header}\n")
-            for i in range(0, len(seq), width):
-                out.write(seq[i:i + width] + "\n")
-
-
-def reverse_complement(seq):
-    table = str.maketrans(
-        "ACGTRYKMSWBDHVNacgtrykmswbdhvn",
-        "TGCAYRMKSWVHDBNtgcayrmkswvhdbn",
-    )
-    return seq.translate(table)[::-1].upper()
 
 
 def make_blast_db(assembly, db_prefix, force=False):
